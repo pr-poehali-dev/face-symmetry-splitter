@@ -1,5 +1,7 @@
 import { useState, useRef, useCallback, useEffect } from "react";
 import Icon from "@/components/ui/icon";
+import JSZip from "jszip";
+import { saveAs } from "file-saver";
 
 // ---- Утилита: повернуть + выровнять изображение в canvas → dataURL ----
 const applyTransform = (
@@ -435,12 +437,22 @@ const ResultImage = ({
   );
 };
 
+const dataUrlToBlob = (dataUrl: string): Blob => {
+  const [header, data] = dataUrl.split(",");
+  const mime = header.match(/:(.*?);/)![1];
+  const binary = atob(data);
+  const arr = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) arr[i] = binary.charCodeAt(i);
+  return new Blob([arr], { type: mime });
+};
+
 // ---- Главный компонент ----
 export default function Index() {
   const [step, setStep] = useState<"upload" | "split" | "result">("upload");
   const [originalImage, setOriginalImage] = useState<string | null>(null);
   const [leftImg, setLeftImg] = useState<string | null>(null);
   const [rightImg, setRightImg] = useState<string | null>(null);
+  const [zipping, setZipping] = useState(false);
 
   const handleUpload = useCallback((imageData: string) => {
     setOriginalImage(imageData);
@@ -459,6 +471,17 @@ export default function Index() {
     setLeftImg(null);
     setRightImg(null);
   };
+
+  const handleDownloadAll = useCallback(async () => {
+    if (!leftImg || !rightImg) return;
+    setZipping(true);
+    const zip = new JSZip();
+    zip.file("symmetra-left.jpg", dataUrlToBlob(leftImg));
+    zip.file("symmetra-right.jpg", dataUrlToBlob(rightImg));
+    const blob = await zip.generateAsync({ type: "blob" });
+    saveAs(blob, "symmetra.zip");
+    setZipping(false);
+  }, [leftImg, rightImg]);
 
   return (
     <div className="min-h-screen bg-[#F7F8FA] text-slate-800 overflow-x-hidden">
@@ -570,6 +593,18 @@ export default function Index() {
               <ResultImage src={leftImg} label="ЛЕВАЯ СТОРОНА × 2" sublabel="Левая половина отражена зеркально" accent="left" />
               <ResultImage src={rightImg} label="ПРАВАЯ СТОРОНА × 2" sublabel="Правая половина отражена зеркально" accent="right" />
             </div>
+
+            <button
+              onClick={handleDownloadAll}
+              disabled={zipping}
+              className="mt-4 w-full py-3.5 rounded-2xl font-display text-base font-semibold text-white transition-all duration-200 hover:opacity-90 active:scale-[0.99] shadow-md flex items-center justify-center gap-2 disabled:opacity-60"
+              style={{ background: "linear-gradient(135deg, #6366f1, #8b5cf6)" }}
+            >
+              {zipping
+                ? <><Icon name="Loader2" size={18} className="animate-spin" />Упаковываю архив...</>
+                : <><Icon name="FolderDown" size={18} />Скачать оба снимка — ZIP</>
+              }
+            </button>
           </div>
         )}
 
