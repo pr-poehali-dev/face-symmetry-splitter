@@ -15,16 +15,19 @@ interface AnalysisReport {
   originalImage: string;
 }
 
-const generateMockAnalysis = (imageData: string): AnalysisReport => {
-  const zones: ZoneMetric[] = [
-    { name: "Глаза", left: Math.random() * 20 + 72, right: Math.random() * 20 + 68, score: Math.random() * 30 + 62, description: "Разница в открытости и расположении" },
-    { name: "Нос", left: Math.random() * 15 + 80, right: Math.random() * 15 + 78, score: Math.random() * 20 + 72, description: "Отклонение оси и ширина крыльев" },
-    { name: "Губы", left: Math.random() * 20 + 70, right: Math.random() * 20 + 68, score: Math.random() * 25 + 68, description: "Симметрия уголков и объёма" },
-    { name: "Овал лица", left: Math.random() * 10 + 85, right: Math.random() * 10 + 83, score: Math.random() * 15 + 78, description: "Ширина и контур скул" },
-    { name: "Брови", left: Math.random() * 25 + 60, right: Math.random() * 25 + 58, score: Math.random() * 35 + 55, description: "Высота дуги и межбровное расстояние" },
-  ];
-  const overall = Math.round(zones.reduce((acc, z) => acc + z.score, 0) / zones.length);
-  return { overallScore: overall, zones, originalImage: imageData };
+const ANALYZE_URL = "https://functions.poehali.dev/91735823-dbef-4581-9b80-915cef599582";
+
+const analyzeWithAPI = async (imageData: string): Promise<AnalysisReport> => {
+  const res = await fetch(ANALYZE_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ image_base64: imageData }),
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    throw new Error(data.message || data.error || "Ошибка анализа");
+  }
+  return { ...data, originalImage: imageData };
 };
 
 const ScoreRing = ({ score, size = 120 }: { score: number; size?: number }) => {
@@ -255,24 +258,34 @@ export default function Index() {
   const [report, setReport] = useState<AnalysisReport | null>(null);
   const [progress, setProgress] = useState(0);
   const [activeTab, setActiveTab] = useState<"visual" | "zones" | "summary">("visual");
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
-  const handleUpload = useCallback((imageData: string) => {
+  const handleUpload = useCallback(async (imageData: string) => {
     setStep("analyzing");
     setProgress(0);
-    const targets = [18, 42, 67, 89, 100];
-    let i = 0;
-    const run = () => {
-      if (i >= targets.length) {
-        setTimeout(() => { setReport(generateMockAnalysis(imageData)); setStep("result"); }, 400);
-        return;
-      }
-      setProgress(targets[i++]);
-      setTimeout(run, 600 + Math.random() * 400);
-    };
-    setTimeout(run, 100);
+    setErrorMsg(null);
+
+    // Анимация прогресса пока идёт запрос
+    const fakeProgress = [12, 28, 45, 62, 78];
+    let pi = 0;
+    const progressInterval = setInterval(() => {
+      if (pi < fakeProgress.length) { setProgress(fakeProgress[pi++]); }
+    }, 700);
+
+    try {
+      const result = await analyzeWithAPI(imageData);
+      clearInterval(progressInterval);
+      setProgress(100);
+      setTimeout(() => { setReport(result); setStep("result"); }, 400);
+    } catch (err: unknown) {
+      clearInterval(progressInterval);
+      const msg = err instanceof Error ? err.message : "Неизвестная ошибка";
+      setErrorMsg(msg);
+      setStep("upload");
+    }
   }, []);
 
-  const reset = () => { setStep("upload"); setReport(null); setProgress(0); };
+  const reset = () => { setStep("upload"); setReport(null); setProgress(0); setErrorMsg(null); };
 
   const getScoreLabel = (s: number) => s >= 85 ? "Высокая симметрия" : s >= 70 ? "Умеренная симметрия" : "Выраженная асимметрия";
   const getScoreColor = (s: number) => s >= 85 ? "#00FFB2" : s >= 70 ? "#FFD166" : "#FF6B6B";
@@ -321,6 +334,14 @@ export default function Index() {
               </p>
             </div>
             <UploadZone onUpload={handleUpload} />
+            {errorMsg && (
+              <div className="mt-4 p-4 rounded-xl border border-red-500/20 bg-red-500/5 flex items-start gap-3">
+                <Icon name="AlertCircle" size={16} className="text-red-400 mt-0.5 shrink-0" />
+                <div>
+                  <p className="text-sm font-mono text-red-400">{errorMsg === "face_not_found" ? "Лицо не обнаружено — загрузите чёткое фото с лицом" : errorMsg}</p>
+                </div>
+              </div>
+            )}
             <div className="mt-10 grid grid-cols-3 gap-4">
               {[
                 { icon: "ScanLine", label: "68 точек", sub: "Прецизионная сетка" },

@@ -1,0 +1,19 @@
+{
+  "tests": [
+    {
+      "name": "OPTIONS preflight",
+      "method": "OPTIONS",
+      "path": "/",
+      "expectedStatus": 200
+    },
+    {
+      "name": "Missing image returns 400",
+      "method": "POST",
+      "path": "/",
+      "body": { "image_base64": "" },
+      "expectedStatus": 400,
+      "expectedBody": { "error": "image_base64 required" },
+      "bodyMatcher": "partial"
+    }
+  ]
+}
