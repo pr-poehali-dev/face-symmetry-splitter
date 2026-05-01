@@ -30,6 +30,70 @@ const applyTransform = (
   return canvas;
 };
 
+// ---- Утилита: автоматическое осветление теней (локально по пикселям) ----
+// Алгоритм: для каждого пикселя считаем яркость (luminance).
+// Если яркость ниже порога — поднимаем её пропорционально (чем темнее — тем сильнее подъём).
+// Светлые зоны остаются нетронутыми. Эффект плавный через gamma-кривую.
+const autoLiftShadows = (src: HTMLCanvasElement): HTMLCanvasElement => {
+  const dst = document.createElement("canvas");
+  dst.width = src.width;
+  dst.height = src.height;
+  const ctx = dst.getContext("2d")!;
+  ctx.drawImage(src, 0, 0);
+
+  const imageData = ctx.getImageData(0, 0, dst.width, dst.height);
+  const data = imageData.data;
+
+  // Считаем среднюю яркость по центральной части изображения (лицо)
+  const cx = Math.floor(dst.width / 2);
+  const cy = Math.floor(dst.height / 2);
+  const sampleW = Math.floor(dst.width * 0.6);
+  const sampleH = Math.floor(dst.height * 0.6);
+  const x0 = cx - sampleW / 2;
+  const y0 = cy - sampleH / 2;
+
+  let totalLum = 0;
+  let count = 0;
+  for (let y = y0; y < y0 + sampleH; y += 4) {
+    for (let x = x0; x < x0 + sampleW; x += 4) {
+      const i = (Math.floor(y) * dst.width + Math.floor(x)) * 4;
+      const lum = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+      totalLum += lum;
+      count++;
+    }
+  }
+  const avgLum = count > 0 ? totalLum / count : 128;
+
+  // Целевая яркость — 160 (немного светлее нормы)
+  const targetLum = 160;
+  // Если средняя яркость уже достаточна — не трогаем
+  if (avgLum >= targetLum) return src;
+
+  // Строим LUT (lookup table) для коррекции: поднимаем тёмные пиксели
+  const lut = new Uint8Array(256);
+  for (let v = 0; v < 256; v++) {
+    // Насколько этот пиксель «тёмный» (0 = светлый, 1 = очень тёмный)
+    const shadow = Math.max(0, 1 - v / Math.max(1, avgLum * 1.2));
+    // Подъём — тём сильнее, чем темнее пиксель
+    const lift = shadow * (targetLum - avgLum) * 1.4;
+    lut[v] = Math.min(255, Math.round(v + lift));
+  }
+
+  // Применяем LUT к каждому пикселю
+  for (let i = 0; i < data.length; i += 4) {
+    const lum = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+    // Применяем только к тёмным пикселям (lum < avgLum * 1.3)
+    if (lum < avgLum * 1.3) {
+      data[i]     = lut[data[i]];
+      data[i + 1] = lut[data[i + 1]];
+      data[i + 2] = lut[data[i + 2]];
+    }
+  }
+
+  ctx.putImageData(imageData, 0, 0);
+  return dst;
+};
+
 // ---- Утилита: построить зеркальную половину ----
 const buildHalfCanvas = (
   src: HTMLCanvasElement,
@@ -150,8 +214,9 @@ const SplitEditor = ({
   const imgRef = useRef<HTMLImageElement | null>(null);
   const [imgLoaded, setImgLoaded] = useState(false);
 
-  const [angle, setAngle] = useState(0);          // градусы, -45..+45
-  const [brightness, setBrightness] = useState(1); // 1.0 = норма
+  const [angle, setAngle] = useState(0);
+  const [brightness, setBrightness] = useState(1);
+  const [shadowLift, setShadowLift] = useState(false); // авто-коррекция теней
   const [splitPercent, setSplitPercent] = useState(50);
   const [draggingLine, setDraggingLine] = useState(false);
 
@@ -169,8 +234,11 @@ const SplitEditor = ({
     if (!canvas) return;
     const ctx = canvas.getContext("2d")!;
 
-    // Трансформированное изображение
-    const transformed = applyTransform(imgRef.current, angle, brightness);
+    // Трансформированное изображение (поворот + яркость)
+    let transformed = applyTransform(imgRef.current, angle, brightness);
+    // Авто-коррекция теней — только если включена
+    if (shadowLift) transformed = autoLiftShadows(transformed);
+
     canvas.width = transformed.width;
     canvas.height = transformed.height;
 
@@ -225,7 +293,7 @@ const SplitEditor = ({
     ctx.fillStyle = "rgba(255,255,255,0.4)";
     ctx.textAlign = "right";
     ctx.fillText("ПРАВО", canvas.width - 10, 10);
-  }, [imgLoaded, angle, brightness, splitPercent]);
+  }, [imgLoaded, angle, brightness, shadowLift, splitPercent]);
 
   const getPercentFromEvent = (clientX: number): number => {
     const canvas = canvasRef.current;
@@ -242,7 +310,8 @@ const SplitEditor = ({
 
   const handleConfirm = () => {
     if (!imgRef.current) return;
-    const transformed = applyTransform(imgRef.current, angle, brightness);
+    let transformed = applyTransform(imgRef.current, angle, brightness);
+    if (shadowLift) transformed = autoLiftShadows(transformed);
     onConfirm(transformed, splitPercent);
   };
 
@@ -266,6 +335,25 @@ const SplitEditor = ({
           Поверните, выровняйте яркость, затем установите линию раздела
         </p>
       </div>
+
+      {/* Авто-коррекция теней */}
+      <button
+        onClick={() => setShadowLift(v => !v)}
+        className={`mb-3 w-full flex items-center justify-between px-4 py-3 rounded-2xl border transition-all duration-200 shadow-sm ${
+          shadowLift
+            ? "bg-amber-50 border-amber-200 text-amber-700"
+            : "bg-white border-slate-100 text-slate-500 hover:border-slate-200"
+        }`}
+      >
+        <div className="flex items-center gap-2">
+          <Icon name="Wand2" size={15} className={shadowLift ? "text-amber-500" : "text-slate-400"} />
+          <span className="text-sm font-mono font-semibold">Авто-убрать затемнение</span>
+          <span className="text-xs font-mono opacity-60">— осветляет тени на лице</span>
+        </div>
+        <div className={`w-9 h-5 rounded-full transition-all duration-200 flex items-center px-0.5 ${shadowLift ? "bg-amber-400" : "bg-slate-200"}`}>
+          <div className={`w-4 h-4 rounded-full bg-white shadow transition-transform duration-200 ${shadowLift ? "translate-x-4" : "translate-x-0"}`} />
+        </div>
+      </button>
 
       {/* Панель инструментов */}
       <div className="mb-4 grid grid-cols-2 gap-3">
